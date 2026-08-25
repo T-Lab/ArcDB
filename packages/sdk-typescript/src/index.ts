@@ -1,0 +1,30 @@
+export {
+  type AddEvidenceInput,
+  ArcDB,
+  type ArcDBOptions,
+  type CreateOutputInput,
+  type CreateRunInput,
+  type CreateScoreInput,
+  type CreateSpanInput,
+  type CreateTraceInput,
+  type EffectOperation,
+  type IngestionBatch,
+  type PrepareEffectInput,
+  type PromoteOutputInput,
+  type RecordReceiptInput,
+  type RequestContext,
+  type RetryOptions,
+  type Run,
+  RunHandle,
+  type Score,
+  type Span,
+  type Trace,
+  type TransitionRemediationInput,
+} from "./client.js";
+export { ArcDBApiError, ArcDBBufferedError, ArcDBNetworkError } from "./errors.js";
+export {
+  type BufferedOperation,
+  FileOfflineBuffer,
+  MemoryOfflineBuffer,
+  type OfflineBuffer,
+} from "./offline.js";

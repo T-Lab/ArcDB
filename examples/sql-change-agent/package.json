@@ -1,0 +1,30 @@
+{
+  "name": "@arcdb/example-sql-change-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node --env-file-if-exists=../../.env --import tsx src/main.ts",
+    "inspect": "node --env-file-if-exists=../../.env --import tsx src/inspect.ts",
+    "receipt": "node --env-file-if-exists=../../.env --import tsx src/record-receipt.ts",
+    "invalidate": "node --env-file-if-exists=../../.env --import tsx src/invalidate.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run src",
+    "test:unit": "vitest run src"
+  },
+  "dependencies": {
+    "@arcdb/sdk": "workspace:*",
+    "@electric-sql/pglite": "0.5.7"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsx": "4.23.12",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "license": "Apache-2.0"
+}

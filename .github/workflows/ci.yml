@@ -1,0 +1,278 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate workspace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.22.0
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.23.0 --activate
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level high
+      - name: Check formatting
+        run: pnpm format:check
+      - name: Lint
+        run: pnpm lint
+      - name: Type-check
+        run: pnpm typecheck
+      - name: Run tests
+        run: pnpm test
+      - name: Build
+        run: pnpm build
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+
+  integration:
+    name: PostgreSQL integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17.7-alpine
+        env:
+          POSTGRES_USER: arcdb_admin
+          POSTGRES_PASSWORD: arcdb_admin_ci_only
+          POSTGRES_DB: arcdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U arcdb_admin -d arcdb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7.4.7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ARCDB_ADMIN_DATABASE_URL: postgresql://arcdb_admin:arcdb_admin_ci_only@localhost:5432/arcdb
+      ARCDB_DATABASE_URL: postgresql://arcdb_app:arcdb_app_ci_only@localhost:5432/arcdb
+      ARCDB_SYSTEM_DATABASE_URL: postgresql://arcdb_system:arcdb_system_ci_only@localhost:5432/arcdb
+      ARCDB_RLS_TEST_ADMIN_DATABASE_URL: postgresql://arcdb_admin:arcdb_admin_ci_only@localhost:5432/arcdb
+      ARCDB_RLS_TEST_DATABASE_URL: postgresql://arcdb_app:arcdb_app_ci_only@localhost:5432/arcdb
+      ARCDB_RLS_TEST_SYSTEM_DATABASE_URL: postgresql://arcdb_system:arcdb_system_ci_only@localhost:5432/arcdb
+      ARCDB_POSTGRES_APP_USER: arcdb_app
+      ARCDB_POSTGRES_APP_PASSWORD: arcdb_app_ci_only
+      ARCDB_POSTGRES_SYSTEM_USER: arcdb_system
+      ARCDB_POSTGRES_SYSTEM_PASSWORD: arcdb_system_ci_only
+      ARCDB_REDIS_URL: redis://localhost:6379
+      ARCDB_ALLOW_DEV_BOOTSTRAP: "true"
+      ARCDB_BOOTSTRAP_API_KEY: arcdb_ci_key_at_least_32_characters
+      ARCDB_API_KEY: arcdb_ci_key_at_least_32_characters
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.22.0
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.23.0 --activate
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Apply migrations
+        env:
+          ARCDB_DATABASE_URL: ${{ env.ARCDB_ADMIN_DATABASE_URL }}
+        run: pnpm db:migrate
+      - name: Seed local tenant
+        env:
+          ARCDB_DATABASE_URL: ${{ env.ARCDB_ADMIN_DATABASE_URL }}
+        run: pnpm db:seed
+      - name: Provision runtime database roles
+        run: |
+          docker run --rm --network host \
+            -e PGHOST=127.0.0.1 \
+            -e PGPORT=5432 \
+            -e PGDATABASE=arcdb \
+            -e PGUSER=arcdb_admin \
+            -e PGPASSWORD=arcdb_admin_ci_only \
+            -e ARCDB_POSTGRES_APP_USER \
+            -e ARCDB_POSTGRES_APP_PASSWORD \
+            -e ARCDB_POSTGRES_SYSTEM_USER \
+            -e ARCDB_POSTGRES_SYSTEM_PASSWORD \
+            -v "$GITHUB_WORKSPACE/infra/postgres/init-app-role.sh:/opt/arcdb/init-app-role.sh:ro" \
+            postgres:17.7-alpine /bin/sh /opt/arcdb/init-app-role.sh
+      - name: Verify role initialization removes stale memberships
+        run: |
+          docker run --rm --network host \
+            -e PGHOST=127.0.0.1 \
+            -e PGPORT=5432 \
+            -e PGDATABASE=arcdb \
+            -e PGUSER=arcdb_admin \
+            -e PGPASSWORD=arcdb_admin_ci_only \
+            postgres:17.7-alpine psql --no-psqlrc --set=ON_ERROR_STOP=1 \
+              --command 'GRANT arcdb_system TO arcdb_app;
+                         GRANT UPDATE (key_hash, permissions) ON public.api_keys TO arcdb_app;
+                         GRANT UPDATE (revoked_at) ON public.api_keys TO arcdb_system;
+                         GRANT DELETE ON public.projects TO PUBLIC'
+          docker run --rm --network host \
+            -e PGHOST=127.0.0.1 \
+            -e PGPORT=5432 \
+            -e PGDATABASE=arcdb \
+            -e PGUSER=arcdb_admin \
+            -e PGPASSWORD=arcdb_admin_ci_only \
+            -e ARCDB_POSTGRES_APP_USER \
+            -e ARCDB_POSTGRES_APP_PASSWORD \
+            -e ARCDB_POSTGRES_SYSTEM_USER \
+            -e ARCDB_POSTGRES_SYSTEM_PASSWORD \
+            -v "$GITHUB_WORKSPACE/infra/postgres/init-app-role.sh:/opt/arcdb/init-app-role.sh:ro" \
+            postgres:17.7-alpine /bin/sh /opt/arcdb/init-app-role.sh
+          if docker run --rm --network host \
+            -e PGHOST=127.0.0.1 \
+            -e PGPORT=5432 \
+            -e PGDATABASE=arcdb \
+            -e PGUSER=arcdb_app \
+            -e PGPASSWORD=arcdb_app_ci_only \
+            postgres:17.7-alpine psql --no-psqlrc --set=ON_ERROR_STOP=1 \
+              --command 'SET ROLE arcdb_system'; then
+            echo 'arcdb_app unexpectedly retained SET ROLE authority' >&2
+            exit 1
+          fi
+          test "$(docker run --rm --network host \
+            -e PGHOST=127.0.0.1 \
+            -e PGPORT=5432 \
+            -e PGDATABASE=arcdb \
+            -e PGUSER=arcdb_admin \
+            -e PGPASSWORD=arcdb_admin_ci_only \
+            postgres:17.7-alpine psql --no-psqlrc --set=ON_ERROR_STOP=1 --tuples-only --no-align \
+              --command "SELECT
+                NOT has_column_privilege('arcdb_app', 'public.api_keys', 'key_hash', 'UPDATE')
+                AND NOT has_column_privilege('arcdb_app', 'public.api_keys', 'permissions', 'UPDATE')
+                AND has_column_privilege('arcdb_app', 'public.api_keys', 'revoked_at', 'UPDATE')
+                AND NOT has_table_privilege('arcdb_app', 'public.projects', 'DELETE')
+                AND NOT has_table_privilege('arcdb_app', 'public.organizations', 'UPDATE')
+                AND NOT has_column_privilege('arcdb_system', 'public.api_keys', 'revoked_at', 'UPDATE')
+                AND has_column_privilege('arcdb_system', 'public.api_keys', 'last_used_at', 'UPDATE')")" = t
+      - name: Run integration and fault tests
+        run: |
+          pnpm exec turbo run test:integration --env-mode=loose
+          pnpm exec turbo run test:fault --env-mode=loose
+
+  compose-smoke:
+    name: Full-stack Compose smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    needs: validate
+    env:
+      ARCDB_POSTGRES_ADMIN_PASSWORD: arcdb_admin_ci_only
+      ARCDB_POSTGRES_APP_PASSWORD: arcdb_app_ci_only
+      ARCDB_POSTGRES_SYSTEM_PASSWORD: arcdb_system_ci_only
+      ARCDB_S3_SECRET_KEY: arcdb_s3_ci_only
+      ARCDB_BOOTSTRAP_API_KEY: arcdb_ci_key_at_least_32_characters
+      ARCDB_API_KEY: arcdb_ci_key_at_least_32_characters
+      ARCDB_PROJECT_ID: 019c91e8-43a6-7ec0-a000-000000000002
+      ARCDB_CONSOLE_USERNAME: arcdb-ci
+      ARCDB_CONSOLE_PASSWORD: arcdb_console_ci_only
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.22.0
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.23.0 --activate
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Start the complete local stack
+        run: docker compose up --detach --build --wait --wait-timeout 240 api worker web
+      - name: Verify public and protected health boundaries
+        run: |
+          curl --fail --silent --show-error http://127.0.0.1:4000/health/ready
+          curl --fail --silent --show-error http://127.0.0.1:4000/openapi.json >/dev/null
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer $ARCDB_API_KEY" \
+            --header "X-ArcDB-Project-Id: $ARCDB_PROJECT_ID" \
+            http://127.0.0.1:4000/v1/projects \
+            | jq --exit-status '.data | length == 1' >/dev/null
+          curl --fail --silent --show-error http://127.0.0.1:3000/health/live
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/overview)" = 401
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/health/livex)" = 401
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/favicon.icox)" = 401
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/_next/staticx)" = 401
+          curl --fail --silent --show-error --user "$ARCDB_CONSOLE_USERNAME:$ARCDB_CONSOLE_PASSWORD" http://127.0.0.1:3000/overview >/dev/null
+      - name: Exercise the lifecycle against PostgreSQL, MinIO, Redis, API, and worker
+        run: |
+          pnpm demo:sql-agent > /tmp/arcdb-demo.json
+          export ARCDB_EFFECT_ID="$(jq --exit-status --raw-output '.effectId' /tmp/arcdb-demo.json)"
+          export ARCDB_SOURCE_VERSION_ID="$(jq --exit-status --raw-output '.sourceVersionId' /tmp/arcdb-demo.json)"
+          pnpm --filter @arcdb/example-sql-change-agent inspect > /tmp/arcdb-effect.json
+          export ARCDB_EXTERNAL_STATUS=COMMITTED
+          export ARCDB_EXTERNAL_TRANSACTION_ID=ci-change-ticket-1
+          export ARCDB_ACTUAL_EFFECTS_JSON='{"columnAdded":"public.accounts.risk_score"}'
+          pnpm --filter @arcdb/example-sql-change-agent receipt > /tmp/arcdb-receipt.json
+          export ARCDB_INVALIDATION_REASON='CI lifecycle smoke'
+          pnpm --filter @arcdb/example-sql-change-agent invalidate > /tmp/arcdb-invalidation.json
+          jq --exit-status '.id and .intentId' /tmp/arcdb-receipt.json >/dev/null
+          jq --exit-status '.outputTransitions | length >= 1' /tmp/arcdb-invalidation.json >/dev/null
+          export ARCDB_REMEDIATION_ID="$(jq --exit-status --raw-output '.remediations[0].id' /tmp/arcdb-invalidation.json)"
+          jq --null-input '{expectedStatus:"PENDING_APPROVAL",nextStatus:"WAIVED",resolution:{summary:"CI verified the operator remediation transition",references:[{kind:"TICKET",reference:"ci-change-ticket-1"}],metadata:{source:"compose-smoke"}}}' \
+            | curl --fail --silent --show-error \
+                --request POST \
+                --header "Authorization: Bearer $ARCDB_API_KEY" \
+                --header "X-ArcDB-Project-Id: $ARCDB_PROJECT_ID" \
+                --header "Idempotency-Key: compose-remediation-transition-1" \
+                --header 'Content-Type: application/json' \
+                --data-binary @- \
+                "http://127.0.0.1:4000/v1/effects/$ARCDB_EFFECT_ID/remediations/$ARCDB_REMEDIATION_ID/transition" \
+            | jq --exit-status '.data.status == "WAIVED"' >/dev/null
+      - name: Print service logs after a failure
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Stop the stack
+        if: always()
+        run: docker compose down --volumes --remove-orphans
+
+  browser:
+    name: Browser flow
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.22.0
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.23.0 --activate
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run browser tests
+        run: pnpm test:e2e

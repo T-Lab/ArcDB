@@ -1,0 +1,228 @@
+name: arcdb
+
+x-service-environment: &service-environment
+  NODE_ENV: development
+  ARCDB_LOG_LEVEL: ${ARCDB_LOG_LEVEL:-info}
+  ARCDB_DATABASE_URL: ${ARCDB_COMPOSE_APP_DATABASE_URL:-postgresql://${ARCDB_POSTGRES_APP_USER:-arcdb_app}:${ARCDB_POSTGRES_APP_PASSWORD:-arcdb_app_local_only}@postgres:5432/arcdb}
+  ARCDB_SYSTEM_DATABASE_URL: ${ARCDB_COMPOSE_SYSTEM_DATABASE_URL:-postgresql://${ARCDB_POSTGRES_SYSTEM_USER:-arcdb_system}:${ARCDB_POSTGRES_SYSTEM_PASSWORD:-arcdb_system_local_only}@postgres:5432/arcdb}
+  ARCDB_REDIS_URL: redis://redis:6379
+  ARCDB_S3_ENDPOINT: http://minio:9000
+  ARCDB_S3_REGION: ${ARCDB_S3_REGION:-us-east-1}
+  ARCDB_S3_BUCKET: ${ARCDB_S3_BUCKET:-arcdb-artifacts}
+  ARCDB_S3_ACCESS_KEY: ${ARCDB_S3_ACCESS_KEY:-arcdb}
+  ARCDB_S3_SECRET_KEY: ${ARCDB_S3_SECRET_KEY:-arcdb_local_only}
+  ARCDB_S3_FORCE_PATH_STYLE: "true"
+
+services:
+  postgres:
+    image: postgres:17.6-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: arcdb
+      POSTGRES_USER: ${ARCDB_POSTGRES_ADMIN_USER:-arcdb_admin}
+      POSTGRES_PASSWORD: ${ARCDB_POSTGRES_ADMIN_PASSWORD:-arcdb_admin_local_only}
+    ports:
+      - "${ARCDB_BIND_ADDRESS:-127.0.0.1}:${ARCDB_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [arcdb]
+
+  postgres-role-init:
+    image: postgres:17.6-bookworm
+    restart: "no"
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: arcdb
+      PGUSER: ${ARCDB_POSTGRES_ADMIN_USER:-arcdb_admin}
+      PGPASSWORD: ${ARCDB_POSTGRES_ADMIN_PASSWORD:-arcdb_admin_local_only}
+      ARCDB_POSTGRES_APP_USER: ${ARCDB_POSTGRES_APP_USER:-arcdb_app}
+      ARCDB_POSTGRES_APP_PASSWORD: ${ARCDB_POSTGRES_APP_PASSWORD:-arcdb_app_local_only}
+      ARCDB_POSTGRES_SYSTEM_USER: ${ARCDB_POSTGRES_SYSTEM_USER:-arcdb_system}
+      ARCDB_POSTGRES_SYSTEM_PASSWORD: ${ARCDB_POSTGRES_SYSTEM_PASSWORD:-arcdb_system_local_only}
+    volumes:
+      - ./infra/postgres/init-app-role.sh:/opt/arcdb/init-app-role.sh:ro
+    entrypoint: ["/bin/sh", "/opt/arcdb/init-app-role.sh"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks: [arcdb]
+
+  redis:
+    image: redis:8.2.1-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "${ARCDB_BIND_ADDRESS:-127.0.0.1}:${ARCDB_REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [arcdb]
+
+  minio:
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${ARCDB_S3_ACCESS_KEY:-arcdb}
+      MINIO_ROOT_PASSWORD: ${ARCDB_S3_SECRET_KEY:-arcdb_local_only}
+    ports:
+      - "${ARCDB_BIND_ADDRESS:-127.0.0.1}:${ARCDB_MINIO_PORT:-9000}:9000"
+      - "${ARCDB_BIND_ADDRESS:-127.0.0.1}:${ARCDB_MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [arcdb]
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-07-21T05-28-08Z
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      ARCDB_S3_ACCESS_KEY: ${ARCDB_S3_ACCESS_KEY:-arcdb}
+      ARCDB_S3_SECRET_KEY: ${ARCDB_S3_SECRET_KEY:-arcdb_local_only}
+      ARCDB_S3_BUCKET: ${ARCDB_S3_BUCKET:-arcdb-artifacts}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mc alias set local http://minio:9000 "$${ARCDB_S3_ACCESS_KEY}" "$${ARCDB_S3_SECRET_KEY}"
+        mc mb --ignore-existing "local/$${ARCDB_S3_BUCKET}"
+    networks: [arcdb]
+
+  migrate:
+    image: arcdb-migrate:local
+    build:
+      context: .
+      dockerfile: infra/docker/migrate.Dockerfile
+    restart: "no"
+    environment:
+      <<: *service-environment
+      ARCDB_DATABASE_URL: ${ARCDB_COMPOSE_ADMIN_DATABASE_URL:-postgresql://${ARCDB_POSTGRES_ADMIN_USER:-arcdb_admin}:${ARCDB_POSTGRES_ADMIN_PASSWORD:-arcdb_admin_local_only}@postgres:5432/arcdb}
+      ARCDB_ALLOW_DEV_BOOTSTRAP: "true"
+      ARCDB_BOOTSTRAP_API_KEY: ${ARCDB_BOOTSTRAP_API_KEY:-arcdb_dev_change_me_32_characters}
+      ARCDB_BOOTSTRAP_ORGANIZATION: ${ARCDB_BOOTSTRAP_ORGANIZATION:-ArcDB Local}
+      ARCDB_BOOTSTRAP_PROJECT: ${ARCDB_BOOTSTRAP_PROJECT:-SQL Change Agent}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [arcdb]
+
+  api:
+    image: arcdb-api:local
+    build:
+      context: .
+      dockerfile: infra/docker/api.Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      <<: *service-environment
+      ARCDB_HOST: 0.0.0.0
+      ARCDB_API_PORT: 4000
+      ARCDB_PUBLIC_URL: ${ARCDB_PUBLIC_URL:-http://localhost:3000}
+      ARCDB_API_PUBLIC_URL: ${ARCDB_API_PUBLIC_URL:-http://localhost:4000}
+      ARCDB_ALLOWED_CONNECTORS: ${ARCDB_ALLOWED_CONNECTORS:-manual-receipt}
+      ARCDB_ALLOW_DEV_BOOTSTRAP: "false"
+    ports:
+      - "${ARCDB_BIND_ADDRESS:-127.0.0.1}:${ARCDB_API_PORT:-4000}:4000"
+    depends_on:
+      postgres-role-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks: [arcdb]
+
+  worker:
+    image: arcdb-worker:local
+    build:
+      context: .
+      dockerfile: infra/docker/worker.Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      <<: *service-environment
+      ARCDB_WORKER_HOST: 0.0.0.0
+      ARCDB_WORKER_PORT: 4002
+    ports:
+      - "${ARCDB_BIND_ADDRESS:-127.0.0.1}:${ARCDB_WORKER_PORT:-4002}:4002"
+    depends_on:
+      postgres-role-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        ["CMD", "node", "-e", "fetch('http://127.0.0.1:4002/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks: [arcdb]
+
+  web:
+    image: arcdb-web:local
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+      args:
+        NEXT_PUBLIC_ARCDB_API_URL: ${NEXT_PUBLIC_ARCDB_API_URL:-http://localhost:4000}
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      ARCDB_API_URL: http://api:4000
+      ARCDB_API_KEY: ${ARCDB_API_KEY:-arcdb_dev_change_me_32_characters}
+      ARCDB_CONSOLE_USERNAME: ${ARCDB_CONSOLE_USERNAME:-arcdb}
+      ARCDB_CONSOLE_PASSWORD: ${ARCDB_CONSOLE_PASSWORD:-arcdb_console_local_only}
+      NEXT_PUBLIC_ARCDB_API_URL: ${NEXT_PUBLIC_ARCDB_API_URL:-http://localhost:4000}
+      NEXT_TELEMETRY_DISABLED: "1"
+    ports:
+      - "${ARCDB_BIND_ADDRESS:-127.0.0.1}:${ARCDB_WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health/live').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks: [arcdb]
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+
+networks:
+  arcdb:
+    driver: bridge

@@ -1,0 +1,45 @@
+{
+  "name": "@arcdb/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch --env-file-if-exists=../../.env src/server.ts",
+    "start": "node --env-file-if-exists=../../.env dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:contract": "vitest run test/contract",
+    "test:integration": "vitest run test/integration",
+    "clean": "rm -rf dist coverage"
+  },
+  "dependencies": {
+    "@arcdb/artifacts": "workspace:*",
+    "@arcdb/auth": "workspace:*",
+    "@arcdb/contracts": "workspace:*",
+    "@arcdb/db": "workspace:*",
+    "@arcdb/lifecycle": "workspace:*",
+    "@arcdb/lineage": "workspace:*",
+    "@arcdb/observability": "workspace:*",
+    "@fastify/cors": "11.3.0",
+    "@fastify/helmet": "13.1.1",
+    "@fastify/rate-limit": "11.2.0",
+    "@fastify/swagger": "9.8.1",
+    "@fastify/swagger-ui": "6.1.1",
+    "fastify": "catalog:",
+    "fastify-type-provider-zod": "7.0.0",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "tsx": "4.23.12",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

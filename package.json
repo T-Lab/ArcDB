@@ -1,0 +1,37 @@
+{
+  "name": "arcdb",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The output lifecycle database for autonomous agents.",
+  "packageManager": "pnpm@11.23.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --parallel",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "check": "biome check .",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "test:unit": "turbo run test:unit",
+    "test:contract": "turbo run test:contract",
+    "test:integration": "turbo run test:integration",
+    "test:fault": "turbo run test:fault",
+    "test:e2e": "playwright test",
+    "db:migrate": "node --env-file-if-exists=.env --import tsx packages/db/src/cli/migrate.ts",
+    "db:seed": "node --env-file-if-exists=.env --import tsx packages/db/src/cli/seed.ts",
+    "demo:sql-agent": "node --env-file-if-exists=.env --import tsx examples/sql-change-agent/src/main.ts",
+    "bench:arcbench": "pnpm --filter @arcdb/arcbench bench",
+    "clean": "turbo run clean"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.10",
+    "@playwright/test": "1.62.1",
+    "tsx": "4.23.12",
+    "turbo": "2.10.11",
+    "typescript": "7.0.2"
+  }
+}
