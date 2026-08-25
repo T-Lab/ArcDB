@@ -283,7 +283,9 @@ describeRealPostgres("ArcDB application-role RLS (requires real PostgreSQL URLs)
         "SELECT id FROM organizations WHERE id = ANY($1::uuid[]) ORDER BY id",
         [[firstTenant, secondTenant]],
       );
-      expect(systemVisible.rows).toEqual([{ id: firstTenant }, { id: secondTenant }]);
+      expect(systemVisible.rows.map(({ id }) => id).sort()).toEqual(
+        [firstTenant, secondTenant].sort(),
+      );
       const systemArtifacts = await system.query<{ project_id: string }>(
         "SELECT project_id FROM artifact_manifests WHERE tenant_id = ANY($1::uuid[]) ORDER BY project_id",
         [[firstTenant, secondTenant]],
