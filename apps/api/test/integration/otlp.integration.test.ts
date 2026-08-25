@@ -23,6 +23,12 @@ const withDatabase =
     ? describe.skip
     : describe;
 
+// This end-to-end assertion performs two independent scrypt-authenticated HTTP requests while
+// Turbo runs the other database suites in parallel. Keep enough wall-clock budget for loaded CI,
+// but retain a shorter PostgreSQL statement timeout so a lock wait cannot hide behind it.
+const OTLP_REPLAY_TEST_TIMEOUT_MS = 15_000;
+const DATABASE_STATEMENT_TIMEOUT_MS = 5_000;
+
 const artifactStore = {
   putStream: async () => Promise.reject(new Error("not used")),
   finalize: async () => Promise.reject(new Error("not used")),
@@ -100,6 +106,7 @@ withDatabase("OTLP PostgreSQL integration", () => {
       connectionString: applicationDatabaseUrl,
       systemConnectionString: systemDatabaseUrl,
       applicationName: "arcdb-api-test",
+      statementTimeoutMillis: DATABASE_STATEMENT_TIMEOUT_MS,
     });
     const generated = generateApiKey();
     apiKey = generated.plaintext;
@@ -156,75 +163,81 @@ withDatabase("OTLP PostgreSQL integration", () => {
   });
 
   afterAll(async () => {
-    await app?.close();
-    if (administratorDatabase !== undefined && tenantId !== undefined) {
-      await administratorDatabase
-        .withSystem((executor: SqlExecutor) =>
-          executor.query("DELETE FROM organizations WHERE id = $1", [tenantId]),
-        )
-        .catch(() => undefined);
+    try {
+      await app?.close();
+      if (administratorDatabase !== undefined && tenantId !== undefined) {
+        await administratorDatabase
+          .withSystem((executor: SqlExecutor) =>
+            executor.query("DELETE FROM organizations WHERE id = $1", [tenantId]),
+          )
+          .catch(() => undefined);
+      }
+    } finally {
+      await Promise.all([database?.close(), administratorDatabase?.close()]);
     }
-    await database?.close();
-    await administratorDatabase?.close();
   });
 
-  it("persists parent-linked spans and replays the same HTTP idempotency key", async () => {
-    const headers = {
-      authorization: `Bearer ${apiKey}`,
-      "content-type": "application/json",
-      "idempotency-key": `otlp-test-${crypto.randomUUID()}`,
-      "x-arcdb-project-id": projectId,
-    };
-    const first = await app.inject({
-      method: "POST",
-      url: "/v1/otlp/v1/traces",
-      headers,
-      payload,
-    });
-    expect(first.statusCode).toBe(200);
-    expect(first.json()).toEqual({});
-    expect(first.headers["x-arcdb-accepted-traces"]).toBe("1");
-    expect(first.headers["x-arcdb-accepted-spans"]).toBe("2");
+  it(
+    "persists parent-linked spans and replays the same HTTP idempotency key",
+    async () => {
+      const headers = {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+        "idempotency-key": `otlp-test-${crypto.randomUUID()}`,
+        "x-arcdb-project-id": projectId,
+      };
+      const first = await app.inject({
+        method: "POST",
+        url: "/v1/otlp/v1/traces",
+        headers,
+        payload,
+      });
+      expect(first.statusCode).toBe(200);
+      expect(first.json()).toEqual({});
+      expect(first.headers["x-arcdb-accepted-traces"]).toBe("1");
+      expect(first.headers["x-arcdb-accepted-spans"]).toBe("2");
 
-    const replay = await app.inject({
-      method: "POST",
-      url: "/v1/otlp/v1/traces",
-      headers,
-      payload,
-    });
-    expect(replay.statusCode).toBe(200);
-    expect(replay.headers["idempotency-replayed"]).toBe("true");
+      const replay = await app.inject({
+        method: "POST",
+        url: "/v1/otlp/v1/traces",
+        headers,
+        payload,
+      });
+      expect(replay.statusCode).toBe(200);
+      expect(replay.headers["idempotency-replayed"]).toBe("true");
 
-    const persisted = await database.withTenant(
-      tenantId,
-      projectId,
-      async (executor) => {
-        const traces = await executor.query<{ id: string; status: string }>(
-          "SELECT id, status FROM traces WHERE tenant_id = $1 AND project_id = $2",
-          [tenantId, projectId],
-        );
-        const spans = await executor.query<{
-          external_id: string;
-          parent_span_id: string | null;
-          status: string;
-        }>(
-          "SELECT external_id, parent_span_id, status FROM spans WHERE tenant_id = $1 AND project_id = $2 ORDER BY started_at",
-          [tenantId, projectId],
-        );
-        return { traces: traces.rows, spans: spans.rows };
-      },
-      { readOnly: true },
-    );
-    expect(persisted.traces).toHaveLength(1);
-    expect(persisted.traces[0]?.status).toBe("FAILED");
-    expect(persisted.spans).toHaveLength(2);
-    expect(persisted.spans[0]).toMatchObject({
-      external_id: `otlp:${rootSpanId}`,
-      parent_span_id: null,
-      status: "OK",
-    });
-    expect(persisted.spans[1]?.external_id).toBe(`otlp:${childSpanId}`);
-    expect(persisted.spans[1]?.parent_span_id).toBeTypeOf("string");
-    expect(persisted.spans[1]?.status).toBe("ERROR");
-  });
+      const persisted = await database.withTenant(
+        tenantId,
+        projectId,
+        async (executor) => {
+          const traces = await executor.query<{ id: string; status: string }>(
+            "SELECT id, status FROM traces WHERE tenant_id = $1 AND project_id = $2",
+            [tenantId, projectId],
+          );
+          const spans = await executor.query<{
+            external_id: string;
+            parent_span_id: string | null;
+            status: string;
+          }>(
+            "SELECT external_id, parent_span_id, status FROM spans WHERE tenant_id = $1 AND project_id = $2 ORDER BY started_at",
+            [tenantId, projectId],
+          );
+          return { traces: traces.rows, spans: spans.rows };
+        },
+        { readOnly: true },
+      );
+      expect(persisted.traces).toHaveLength(1);
+      expect(persisted.traces[0]?.status).toBe("FAILED");
+      expect(persisted.spans).toHaveLength(2);
+      expect(persisted.spans[0]).toMatchObject({
+        external_id: `otlp:${rootSpanId}`,
+        parent_span_id: null,
+        status: "OK",
+      });
+      expect(persisted.spans[1]?.external_id).toBe(`otlp:${childSpanId}`);
+      expect(persisted.spans[1]?.parent_span_id).toBeTypeOf("string");
+      expect(persisted.spans[1]?.status).toBe("ERROR");
+    },
+    OTLP_REPLAY_TEST_TIMEOUT_MS,
+  );
 });

@@ -5,14 +5,19 @@ import type { QueryResult, QueryResultRow } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createRepositories, type SqlExecutor } from "../src/index.js";
 
-const migrationUrl = new URL("../migrations/0001_initial.sql", import.meta.url);
+const migrationUrls = [
+  new URL("../migrations/0001_initial.sql", import.meta.url),
+  new URL("../migrations/0002_allow_fk_producer_cleanup.sql", import.meta.url),
+];
 
 describe("ArcDB PostgreSQL migration", () => {
   let database: PGlite<{ pgcrypto: typeof pgcrypto }>;
 
   beforeEach(async () => {
     database = new PGlite({ extensions: { pgcrypto } });
-    await database.exec(await readFile(migrationUrl, "utf8"));
+    for (const migrationUrl of migrationUrls) {
+      await database.exec(await readFile(migrationUrl, "utf8"));
+    }
   });
 
   afterEach(async () => {
@@ -114,6 +119,54 @@ describe("ArcDB PostgreSQL migration", () => {
     await expect(
       database.query("DELETE FROM effect_receipts WHERE id = $1", [receiptId]),
     ).rejects.toThrow(/append-only/u);
+  });
+
+  it("only clears immutable producer provenance through the run foreign key", async () => {
+    const tenantId = "11111111-1111-4111-8111-111111111111";
+    const projectId = "33333333-3333-4333-8333-333333333333";
+    const runId = "44444444-4444-4444-8444-444444444444";
+    const outputId = "55555555-5555-4555-8555-555555555555";
+    await database.query(
+      "INSERT INTO organizations (id, name, slug) VALUES ($1, 'Tenant', 'producer-cleanup')",
+      [tenantId],
+    );
+    await database.query(
+      "INSERT INTO projects (id, tenant_id, name, slug) VALUES ($1, $2, 'Project', 'producer-cleanup')",
+      [projectId, tenantId],
+    );
+    await database.query(
+      "INSERT INTO runs (id, tenant_id, project_id, name) VALUES ($1, $2, $3, 'producer')",
+      [runId, tenantId, projectId],
+    );
+    await database.query(
+      `INSERT INTO outputs (
+         id, tenant_id, project_id, logical_id, version_id, output_type,
+         content_ref, content_digest, producer_run_id
+       ) VALUES ($1, $2, $3, 'result', 'result@v1', 'text', 'arcdb://result', $4, $5)`,
+      [outputId, tenantId, projectId, `sha256:${"d".repeat(64)}`, runId],
+    );
+
+    await expect(
+      database.query("UPDATE outputs SET producer_run_id = NULL WHERE id = $1", [outputId]),
+    ).rejects.toThrow(/output version identity and content are immutable/u);
+    expect(
+      (
+        await database.query<{ producer_run_id: string | null }>(
+          "SELECT producer_run_id FROM outputs WHERE id = $1",
+          [outputId],
+        )
+      ).rows,
+    ).toEqual([{ producer_run_id: runId }]);
+
+    await database.query("DELETE FROM runs WHERE id = $1", [runId]);
+    expect(
+      (
+        await database.query<{ producer_run_id: string | null }>(
+          "SELECT producer_run_id FROM outputs WHERE id = $1",
+          [outputId],
+        )
+      ).rows,
+    ).toEqual([{ producer_run_id: null }]);
   });
 
   it("runs the typed Output, Evidence, head CAS, Effect, and Receipt repositories", async () => {

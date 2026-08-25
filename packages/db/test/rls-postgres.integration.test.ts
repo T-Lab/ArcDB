@@ -154,6 +154,12 @@ describeRealPostgres("ArcDB application-role RLS (requires real PostgreSQL URLs)
           )
         ).rows,
       ).toEqual([{ session_id: null }]);
+      await expect(
+        administrator.query(
+          "UPDATE outputs SET producer_run_id = NULL WHERE tenant_id = $1 AND project_id = $2 AND version_id = 'deletion-check-v1'",
+          [firstTenant, firstProject],
+        ),
+      ).rejects.toMatchObject({ code: "55000" });
       await administrator.query("DELETE FROM runs WHERE id = $1", [runId]);
       expect(
         (
