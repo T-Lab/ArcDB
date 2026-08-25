@@ -23,11 +23,40 @@ const withDatabase =
     ? describe.skip
     : describe;
 
-// This end-to-end assertion performs two independent scrypt-authenticated HTTP requests while
-// Turbo runs the other database suites in parallel. Keep enough wall-clock budget for loaded CI,
-// but retain a shorter PostgreSQL statement timeout so a lock wait cannot hide behind it.
+// This correctness test performs two independent scrypt-authenticated HTTP requests. Keep a
+// bounded wall-clock budget for slower hosted runners, while ensuring a blocked database statement
+// fails first and is distinguishable from CPU starvation through the per-stage timing records.
 const OTLP_REPLAY_TEST_TIMEOUT_MS = 15_000;
-const DATABASE_STATEMENT_TIMEOUT_MS = 5_000;
+const DATABASE_STATEMENT_TIMEOUT_MS = 3_000;
+
+async function timedStage<Result>(
+  stage: string,
+  operation: () => Promise<Result>,
+): Promise<Result> {
+  const startedAt = performance.now();
+  process.stdout.write(`${JSON.stringify({ event: "otlp_integration_stage", stage })}\n`);
+  try {
+    const result = await operation();
+    process.stdout.write(
+      `${JSON.stringify({
+        event: "otlp_integration_stage_complete",
+        stage,
+        durationMs: Math.round(performance.now() - startedAt),
+      })}\n`,
+    );
+    return result;
+  } catch (error) {
+    process.stdout.write(
+      `${JSON.stringify({
+        event: "otlp_integration_stage_failed",
+        stage,
+        durationMs: Math.round(performance.now() - startedAt),
+        error: error instanceof Error ? error.message : String(error),
+      })}\n`,
+    );
+    throw error;
+  }
+}
 
 const artifactStore = {
   putStream: async () => Promise.reject(new Error("not used")),
@@ -186,45 +215,51 @@ withDatabase("OTLP PostgreSQL integration", () => {
         "idempotency-key": `otlp-test-${crypto.randomUUID()}`,
         "x-arcdb-project-id": projectId,
       };
-      const first = await app.inject({
-        method: "POST",
-        url: "/v1/otlp/v1/traces",
-        headers,
-        payload,
-      });
+      const first = await timedStage("first_http_request", () =>
+        app.inject({
+          method: "POST",
+          url: "/v1/otlp/v1/traces",
+          headers,
+          payload,
+        }),
+      );
       expect(first.statusCode).toBe(200);
       expect(first.json()).toEqual({});
       expect(first.headers["x-arcdb-accepted-traces"]).toBe("1");
       expect(first.headers["x-arcdb-accepted-spans"]).toBe("2");
 
-      const replay = await app.inject({
-        method: "POST",
-        url: "/v1/otlp/v1/traces",
-        headers,
-        payload,
-      });
+      const replay = await timedStage("idempotent_replay_request", () =>
+        app.inject({
+          method: "POST",
+          url: "/v1/otlp/v1/traces",
+          headers,
+          payload,
+        }),
+      );
       expect(replay.statusCode).toBe(200);
       expect(replay.headers["idempotency-replayed"]).toBe("true");
 
-      const persisted = await database.withTenant(
-        tenantId,
-        projectId,
-        async (executor) => {
-          const traces = await executor.query<{ id: string; status: string }>(
-            "SELECT id, status FROM traces WHERE tenant_id = $1 AND project_id = $2",
-            [tenantId, projectId],
-          );
-          const spans = await executor.query<{
-            external_id: string;
-            parent_span_id: string | null;
-            status: string;
-          }>(
-            "SELECT external_id, parent_span_id, status FROM spans WHERE tenant_id = $1 AND project_id = $2 ORDER BY started_at",
-            [tenantId, projectId],
-          );
-          return { traces: traces.rows, spans: spans.rows };
-        },
-        { readOnly: true },
+      const persisted = await timedStage("persistence_query", () =>
+        database.withTenant(
+          tenantId,
+          projectId,
+          async (executor) => {
+            const traces = await executor.query<{ id: string; status: string }>(
+              "SELECT id, status FROM traces WHERE tenant_id = $1 AND project_id = $2",
+              [tenantId, projectId],
+            );
+            const spans = await executor.query<{
+              external_id: string;
+              parent_span_id: string | null;
+              status: string;
+            }>(
+              "SELECT external_id, parent_span_id, status FROM spans WHERE tenant_id = $1 AND project_id = $2 ORDER BY started_at",
+              [tenantId, projectId],
+            );
+            return { traces: traces.rows, spans: spans.rows };
+          },
+          { readOnly: true },
+        ),
       );
       expect(persisted.traces).toHaveLength(1);
       expect(persisted.traces[0]?.status).toBe("FAILED");

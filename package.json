@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "turbo run build",
-    "dev": "turbo run dev --parallel",
+    "dev": "turbo run dev",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",
@@ -23,8 +23,8 @@
     "test:e2e": "playwright test",
     "db:migrate": "node --env-file-if-exists=.env --import tsx packages/db/src/cli/migrate.ts",
     "db:seed": "pnpm --filter @arcdb/db seed",
-    "demo:sql-agent": "node --env-file-if-exists=.env --import tsx examples/sql-change-agent/src/main.ts",
-    "bench:arcbench": "pnpm --filter @arcdb/arcbench bench",
+    "demo:sql-agent": "pnpm exec turbo run build --filter=@arcdb/example-sql-change-agent 1>&2 && node --env-file-if-exists=.env examples/sql-change-agent/dist/main.js",
+    "bench:arcbench": "pnpm exec turbo run build --filter=@arcdb/arcbench 1>&2 && node benchmarks/arcbench/dist/cli.js",
     "clean": "turbo run clean"
   },
   "devDependencies": {

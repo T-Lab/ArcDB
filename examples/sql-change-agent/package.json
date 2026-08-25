@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node --env-file-if-exists=../../.env --import tsx src/main.ts",
-    "inspect": "node --env-file-if-exists=../../.env --import tsx src/inspect.ts",
-    "receipt": "node --env-file-if-exists=../../.env --import tsx src/record-receipt.ts",
-    "invalidate": "node --env-file-if-exists=../../.env --import tsx src/invalidate.ts",
+    "start": "pnpm exec turbo run build --filter=@arcdb/example-sql-change-agent 1>&2 && node --env-file-if-exists=../../.env dist/main.js",
+    "inspect": "pnpm exec turbo run build --filter=@arcdb/example-sql-change-agent 1>&2 && node --env-file-if-exists=../../.env dist/inspect.js",
+    "receipt": "pnpm exec turbo run build --filter=@arcdb/example-sql-change-agent 1>&2 && node --env-file-if-exists=../../.env dist/record-receipt.js",
+    "invalidate": "pnpm exec turbo run build --filter=@arcdb/example-sql-change-agent 1>&2 && node --env-file-if-exists=../../.env dist/invalidate.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run src",
     "test:unit": "vitest run src"
