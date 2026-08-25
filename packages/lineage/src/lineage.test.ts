@@ -63,12 +63,19 @@ describe("component selector semantics", () => {
     fc.assert(
       fc.property(
         fc.constantFrom("json_path", "file", "symbol", "table_column", "record" as const),
-        fc.string({ minLength: 1 }),
+        // Selector values are trimmed and must remain non-empty at the contract boundary.
+        fc.stringMatching(/\S/u),
         (kind, value) => {
           expect(selectorsIntersect({ kind: "unknown", value: "*" }, { kind, value })).toBe(true);
         },
       ),
     );
+  });
+
+  it("rejects whitespace-only selector values instead of treating malformed input as unknown", () => {
+    expect(() =>
+      selectorsIntersect({ kind: "unknown", value: "*" }, { kind: "json_path", value: " " }),
+    ).toThrow();
   });
 });
 

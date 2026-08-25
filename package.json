@@ -22,7 +22,7 @@
     "test:fault": "turbo run test:fault",
     "test:e2e": "playwright test",
     "db:migrate": "node --env-file-if-exists=.env --import tsx packages/db/src/cli/migrate.ts",
-    "db:seed": "node --env-file-if-exists=.env --import tsx packages/db/src/cli/seed.ts",
+    "db:seed": "pnpm --filter @arcdb/db seed",
     "demo:sql-agent": "node --env-file-if-exists=.env --import tsx examples/sql-change-agent/src/main.ts",
     "bench:arcbench": "pnpm --filter @arcdb/arcbench bench",
     "clean": "turbo run clean"
