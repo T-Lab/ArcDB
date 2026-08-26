@@ -166,6 +166,63 @@ describe("OTLP transport contract", () => {
       requestId: expect.any(String),
     });
   });
+
+  it("advances valid JSON requests beyond the content-type hook", async () => {
+    const authExecutor = authenticatedExecutor({
+      keyHash,
+      permissions: ["run:write"],
+      projectId,
+    });
+    const tenantExecutor = {
+      query: async () => ({ rows: [] }),
+    } as unknown as SqlExecutor;
+    const withTenant = (async (
+      scopedTenantId: string,
+      scopedProjectId: string,
+      callback: (executor: SqlExecutor) => Promise<unknown>,
+    ) => {
+      expect(scopedTenantId).toBe(tenantId);
+      expect(scopedProjectId).toBe(projectId);
+      return callback(tenantExecutor);
+    }) as unknown as Database["withTenant"];
+    const app = await makeApp(databaseStub(authExecutor, withTenant));
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/otlp/v1/traces",
+      headers: {
+        authorization: `Bearer ${plaintext}`,
+        "content-type": "application/json",
+        "x-arcdb-project-id": projectId,
+      },
+      payload: {
+        resourceSpans: [
+          {
+            scopeSpans: [
+              {
+                spans: [
+                  {
+                    traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+                    spanId: "00f067aa0ba902b7",
+                    name: "contract-valid-json",
+                    startTimeUnixNano: "1710000000000000000",
+                    endTimeUnixNano: "1710000001000000000",
+                    status: { code: 1 },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["x-arcdb-accepted-traces"]).toBe("1");
+    expect(response.headers["x-arcdb-accepted-spans"]).toBe("1");
+    expect(response.json()).toEqual({});
+  });
 });
 
 describe("authenticated request security boundary", () => {

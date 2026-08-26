@@ -719,7 +719,10 @@ export async function registerOtlpRoutes(app: FastifyInstance, database: Databas
   api.post(
     "/v1/otlp/v1/traces",
     {
-      onRequest: assertOtlpJsonContentType,
+      // Fastify treats a synchronous hook as callback-style and waits for `done` when it returns
+      // normally. Wrap the pure assertion in an async hook so valid JSON requests advance to body
+      // parsing; thrown validation errors still flow through the shared error handler.
+      onRequest: async (request) => assertOtlpJsonContentType(request),
       schema: {
         body: OtlpExportTraceServiceRequestSchema,
         description:
