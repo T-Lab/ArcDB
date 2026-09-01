@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@arcdb/sdk": "workspace:*",
-    "@electric-sql/pglite": "0.5.7"
+    "@electric-sql/pglite": "0.5.8"
   },
   "devDependencies": {
     "@types/node": "catalog:",
