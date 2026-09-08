@@ -24,11 +24,11 @@
     "pg": "8.23.0"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "0.5.7",
-    "@types/node": "24.10.13",
+    "@electric-sql/pglite": "0.5.8",
+    "@types/node": "26.4.1",
     "@types/pg": "8.23.1",
     "tsx": "4.23.12",
     "typescript": "7.0.2",
-    "vitest": "4.1.11"
+    "vitest": "5.0.0"
   }
 }
